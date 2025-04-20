@@ -5,6 +5,7 @@ import os
 from typing import List
 from scipy.spatial.distance import cosine
 import json
+from fastapi.responses import JSONResponse
 
 app = FastAPI()
 
@@ -16,7 +17,7 @@ if os.path.exists(metadata_path):
 else:
     face_db = []
 
-SIMILARITY_THRESHOLD = 0.4  # Lower is more strict
+SIMILARITY_THRESHOLD = 0.4  # Lower = more strict matching
 
 
 def find_matching_person_id(new_encoding: List[float], face_db: List[dict]) -> str:
@@ -72,3 +73,11 @@ async def upload_image(file: UploadFile = File(...)):
 
     os.remove(image_path)
     return {"detected_faces": new_faces}
+
+
+@app.delete("/reset/")
+def reset_metadata():
+    if os.path.exists(metadata_path):
+        os.remove(metadata_path)
+        return JSONResponse(content={"status": "reset complete"})
+    return JSONResponse(content={"status": "no data to reset"})
