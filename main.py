@@ -1,34 +1,74 @@
-
 from fastapi import FastAPI, UploadFile, File
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
 import face_recognition
-import shutil
 import uuid
 import os
+from typing import List
+from scipy.spatial.distance import cosine
+import json
 
 app = FastAPI()
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# Load existing metadata
+metadata_path = "metadata.json"
+if os.path.exists(metadata_path):
+    with open(metadata_path, "r") as f:
+        face_db = json.load(f)
+else:
+    face_db = []
 
-@app.post("/detect_faces/")
-async def detect_faces(file: UploadFile = File(...)):
-    temp_filename = f"temp_{str(uuid.uuid4())}.jpg"
-    with open(temp_filename, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
+SIMILARITY_THRESHOLD = 0.4  # Lower is more strict
 
-    image = face_recognition.load_image_file(temp_filename)
+
+def find_matching_person_id(new_encoding: List[float], face_db: List[dict]) -> str:
+    for face in face_db:
+        if "encoding" in face and face["encoding"] is not None:
+            dist = cosine(new_encoding, face["encoding"])
+            if dist < SIMILARITY_THRESHOLD:
+                return face["person_id"]
+    return None
+
+
+@app.post("/upload/")
+async def upload_image(file: UploadFile = File(...)):
+    # Save uploaded image temporarily
+    image_path = f"temp_{uuid.uuid4()}.jpg"
+    with open(image_path, "wb") as f:
+        f.write(await file.read())
+
+    image = face_recognition.load_image_file(image_path)
     face_locations = face_recognition.face_locations(image)
+    face_encodings = face_recognition.face_encodings(image, face_locations)
 
-    os.remove(temp_filename)
+    new_faces = []
 
-    return JSONResponse({
-        "num_faces": len(face_locations),
-        "face_locations": face_locations
-    })
+    for location, encoding in zip(face_locations, face_encodings):
+        matched_id = find_matching_person_id(encoding.tolist(), face_db)
+
+        if matched_id:
+            person_id = matched_id
+        else:
+            person_id = str(uuid.uuid4())
+
+        face_data = {
+            "original_file": file.filename,
+            "face_file": f"{file.filename}_face.jpg",
+            "location": {
+                "top": location[0],
+                "right": location[1],
+                "bottom": location[2],
+                "left": location[3]
+            },
+            "encoding": encoding.tolist(),
+            "name": "Unknown",
+            "person_id": person_id
+        }
+
+        face_db.append(face_data)
+        new_faces.append(face_data)
+
+    # Save updated metadata
+    with open(metadata_path, "w") as f:
+        json.dump(face_db, f, indent=2)
+
+    os.remove(image_path)
+    return {"detected_faces": new_faces}
