@@ -1,25 +1,27 @@
 from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 import face_recognition
 import uuid
 import os
+import json
 from typing import List
 from scipy.spatial.distance import cosine
-import json
-from fastapi.responses import JSONResponse
+import numpy as np
 
 app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # or ["http://localhost:8081"] for strict access
+    allow_origins=["*"],  # You can specify domains like ["http://localhost:8081"]
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Load existing metadata
 metadata_path = "metadata.json"
+
+# Load face metadata
 if os.path.exists(metadata_path):
     with open(metadata_path, "r") as f:
         face_db = json.load(f)
@@ -40,7 +42,6 @@ def find_matching_person_id(new_encoding: List[float], face_db: List[dict]) -> s
 
 @app.post("/upload/")
 async def upload_image(file: UploadFile = File(...)):
-    # Save uploaded image temporarily
     image_path = f"temp_{uuid.uuid4()}.jpg"
     with open(image_path, "wb") as f:
         f.write(await file.read())
@@ -53,11 +54,7 @@ async def upload_image(file: UploadFile = File(...)):
 
     for location, encoding in zip(face_locations, face_encodings):
         matched_id = find_matching_person_id(encoding.tolist(), face_db)
-
-        if matched_id:
-            person_id = matched_id
-        else:
-            person_id = str(uuid.uuid4())
+        person_id = matched_id if matched_id else str(uuid.uuid4())
 
         face_data = {
             "original_file": file.filename,
@@ -66,17 +63,16 @@ async def upload_image(file: UploadFile = File(...)):
                 "top": location[0],
                 "right": location[1],
                 "bottom": location[2],
-                "left": location[3]
+                "left": location[3],
             },
             "encoding": encoding.tolist(),
             "name": "Unknown",
-            "person_id": person_id
+            "person_id": person_id,
         }
 
         face_db.append(face_data)
         new_faces.append(face_data)
 
-    # Save updated metadata
     with open(metadata_path, "w") as f:
         json.dump(face_db, f, indent=2)
 
@@ -90,3 +86,18 @@ def reset_metadata():
         os.remove(metadata_path)
         return JSONResponse(content={"status": "reset complete"})
     return JSONResponse(content={"status": "no data to reset"})
+
+
+@app.post("/detect_faces/")
+async def detect_faces(file: UploadFile = File(...)):
+    contents = await file.read()
+    image = face_recognition.load_image_file(np.frombuffer(contents, np.uint8))
+
+    face_locations = face_recognition.face_locations(image)
+    face_encodings = face_recognition.face_encodings(image, face_locations)
+
+    return {
+        "face_locations": face_locations,
+        "face_encodings": [enc.tolist() for enc in face_encodings],
+        "num_faces": len(face_encodings)
+    }
